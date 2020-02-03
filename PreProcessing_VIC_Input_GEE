@@ -1,0 +1,244 @@
+//https://code.earthengine.google.com/?scriptPath=users%2Fabt0020%2FVIC_Processing%3APre-Process_VIC
+
+/////////////////////////////////////////////////////
+//VIC Pre-Processing Bulk of Data
+//Purpose: To pre-process and align as much data as possible in ge for the VIC model
+//Original Author(s): Andi Brinn Thomas (abt0020@uah.edu)
+//Date of last update: November 1, 2019
+/////////////////////////////////////////////////////
+
+//Adding in basin shapefiles for reference in Tanzania
+Map.addLayer(Gauge1KA31,undefined, 'Gauge 1KA31');
+Map.addLayer(GRR,undefined, 'GRR');
+Map.addLayer(KilomberoLuwegu,undefined, 'Kilombero Luwegu');
+Map.addLayer(Dakawa,undefined, 'Dakawa');
+Map.addLayer(Rufiji,undefined, 'Rufiji');
+Map.addLayer(Mkata,undefined, 'Mkata');
+
+// This is the start year and end year for all Image Collections
+// Change the years to reflect your observed data
+var startYear = 2000;
+var endYear = 2018;
+
+
+// This will convert start and end dates to EE date objects
+// Change the month and date for start and end year to reflect your observed data
+var eeStartDate = ee.Date.fromYMD(startYear,1,1);
+var eeEndDate = ee.Date.fromYMD(endYear,12,31);
+
+
+//Center map on area of interest
+//Centering your map helps narrow down the global view
+//The third number is a zoom reference
+Map.setCenter(34, -8, 5);
+
+
+//Here we are getting the Image for the MODIS land cover IGBP classification and clipping to aoi
+//YOU NEED TO CHANGE THE IMAGE DATE TO MEET YOUR NEEDS (We have an image for January 1, 2009)
+//The rest of the code is to display a specific color pallette and add to the map
+var lcover = ee.Image('MODIS/006/MCD12Q1/2009_01_01').select('LC_Type1')
+var lcarea = lcover.clip(aoi);
+var cover_palette = [
+    'aec3d4', // water
+    '152106', '225129', '369b47', '30eb5b', '387242', // forest
+    '6a2325', 'c3aa69', 'b76031', 'd9903d', '91af40',  // shrub, grass
+    '111149', // wetlands
+    'cdb33b', // croplands
+    'cc0013', // urban
+    '33280d', // crop mosaic
+    'd7cdcc', // snow and ice
+    'f7e084', // barren
+    '6f6f6f'  // tundra
+     ];
+
+Map.addLayer(lcarea, {min: 0, max: 17, palette: cover_palette }, 'Land Cover IGBP');
+print(lcover);
+
+
+//We are now clipping our SRTM dataset (imported up top) to the aoi geometry 
+//Then we add the image to the map to make sure it looks okay
+//printing to the console is an option where you can get more info on the image or collection
+print(srtm);
+var srtmarea = srtm.clip(aoi);
+Map.addLayer(srtmarea, {min: 0, max:3000}, 'DEM filled');
+
+
+//Now we are calculating slope based on the filled DEM above
+var slope = ee.Terrain.slope(srtm);
+var clipSlope = slope.clip(aoi);
+Map.addLayer(clipSlope, {min: 0, max: 50}, 'slope'); 
+print(clipSlope);
+
+//Now we are calculating the average elevation per gridcell with SRTM filled
+var elvavg = ee.Reducer.mean(srtmarea);
+Map.addLayer(elvavg, {min: 0, max: 50}, 'Elevation Average');
+print (elvavg);
+
+//Now we are getting the CHIRPS precip data and creating an average annual precip raster
+//Then we display the image on the map to make sure all is well
+var years = ee.List.sequence(startYear, endYear);
+var chirps = ee.ImageCollection('UCSB-CHG/CHIRPS/DAILY').map(clipdata);
+var annualPrecip = ee.ImageCollection.fromImages(years.map(function(year) {
+    var annual = chirps
+        .filter(ee.Filter.calendarRange(year,year,'year'))
+        .sum();
+        return annual
+            .set('year', year)
+            .set('system:time_start', ee.Date.fromYMD(year,1,1));
+            
+}));
+
+var precipitation = annualPrecip.mean()
+
+
+print(precipitation)
+Map.addLayer(precipitation, {min: 0, max:30}, 'Precipitation');
+
+
+//We are using the HydroSHEDS flow direction raster, clipping to our aoi, and displaying on the map
+var dataset1 = ee.Image('WWF/HydroSHEDS/03DIR');
+var clipdd = dataset1.clip(aoi);
+var drainageDirection = clipdd.select('b1');
+var DDVis = {
+  min: 1.0,
+  max: 300.0,
+  palette: [
+    '000000', '023858', '006837', '1a9850', '66bd63', 'a6d96a', 'd9ef8b',
+    'ffffbf', 'fee08b', 'fdae61', 'f46d43', 'd73027'
+  ],
+};
+Map.addLayer(drainageDirection, DDVis, 'Drainage Direction');
+
+
+//The HWSD MU Global dataset is being displayed here and clipped to our aoi
+var hwsd = ee.Image('users/abt0020/hwsd');
+var cliphwsd = hwsd.clip(aoi);
+print(cliphwsd);
+Map.addLayer (cliphwsd,{min:500, max:32000},'HWSD_Soils');
+
+
+//This snippet of code is for transforming and rescaling our images in decimal degrees (0.05) on the export
+//Feel free to change the decimal degrees value to suit your needs
+var outScale = 0.05 // in decimal degrees
+var highResScale = 0.025
+var ul = ee.List(ee.List(aoi.coordinates().get(0)).get(3))
+var crsTransform = ee.List([outScale,0,ul.get(0),0,-outScale,ul.get(1)]).getInfo()
+var highResTransform = ee.List([highResScale,0,ul.get(0),0,-highResScale,ul.get(1)]).getInfo()
+print(crsTransform)
+
+//create grid based on aoi
+function create_grid(geom,gridSize){
+  var bounds = geom.bounds();
+  var coords = ee.List(bounds.coordinates().get(0));
+  
+  gridSize = ee.Number(gridSize);
+  
+  
+  var west = ee.Number(ee.List(coords.get(0)).get(0)),
+      south = ee.Number(ee.List(coords.get(0)).get(1)),
+      east = ee.Number(ee.List(coords.get(2)).get(0)),
+      north = ee.Number(ee.List(coords.get(2)).get(1));
+      
+  west = west.subtract(west.mod(gridSize));
+  south = south.subtract(south.mod(gridSize));
+  east = east.add(gridSize.subtract(east.mod(gridSize)));
+  north = north.add(gridSize.subtract(north.mod(gridSize)));
+  
+  var grid = ee.FeatureCollection(
+    ee.List.sequence(south,north.subtract(gridSize),gridSize).map(function(i){
+      i = ee.Number(i);
+      var out = ee.List.sequence(west,east.subtract(gridSize),gridSize).map(function(j){
+        j = ee.Number(j);
+        var id = i.add(j);
+        var box = ee.Feature(ee.Geometry.Rectangle(j,i,j.add(gridSize),i.add(gridSize)));
+        return box.set({'id':id,'value':1});
+      });
+    return out;
+    }).flatten()
+  );
+  
+  return grid;
+}
+
+var myGrid = create_grid(aoi,0.05);
+var myRaster = myGrid.reduceToImage(['value'],ee.Reducer.firstNonNull());
+
+Map.addLayer(myRaster, undefined, 'MyRaster');
+Map.addLayer(myGrid, undefined, 'MyGrid');
+
+
+//This function clips our image collections based on the aoi
+function clipdata (image){return image.clip(aoi);}
+
+
+// Export grid
+Export.image.toDrive({
+  image: myRaster,
+  description: 'Grid',
+  crs: 'epsg:4326',
+  crsTransform: crsTransform,
+  region: aoi,
+  maxPixels: 1.0E13,
+});
+
+// Export precipitation image, specifying transformation and region.
+Export.image.toDrive({
+  image: precipitation,
+  description: 'Mean_Annual_Precipitation',
+  crs: 'epsg:4326',
+  crsTransform: crsTransform,
+  region: aoi,
+  maxPixels: 1.0E13,
+});
+
+
+// Export drainage direction image, specifying transformation and region.
+Export.image.toDrive({
+  image: drainageDirection,
+  description: 'Drainage_Direction',
+  crs: 'epsg:4326',
+  crsTransform: crsTransform,
+  region: aoi,
+  maxPixels: 1.0E13,
+});
+
+
+// Export SRTM DEM, specifying transformation and region.
+Export.image.toDrive({
+  image: srtmarea,
+  description: 'SRTM_Filled',
+  crs: 'epsg:4326',
+  crsTransform: highResTransform,
+  region: aoi,
+  maxPixels: 1.0E13,
+});
+
+
+// Export slope image, specifying transformation and region.
+Export.image.toDrive({
+  image: slope,
+  description: 'Slope',
+  crs: 'epsg:4326',
+  crsTransform: crsTransform,
+  region: aoi,
+  maxPixels: 1.0E13,
+});
+
+// Export land cover image, specifying transformation and region.
+Export.image.toDrive({
+  image: lcarea,
+  description: 'Land_Cover_IGBP',
+  crs: 'epsg:4326',
+  region: aoi,
+  maxPixels: 1.0E13,
+});
+
+// Export soil classification image, specifying transformation and region.
+Export.image.toDrive({
+  image: cliphwsd,
+  description: 'HWSD_Soils',
+  crs: 'epsg:4326',
+  crsTransform: crsTransform,
+  region: aoi,
+  maxPixels: 1.0E13,
+});
